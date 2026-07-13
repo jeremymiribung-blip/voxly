@@ -20,15 +20,21 @@ See the [README.md](README.md) Quick Start section.
 ### Running Checks Locally
 
 ```bash
-# Rust
+# Rust (from repo root or src-tauri)
 cargo fmt -- --check
-cargo clippy --all-targets -- -D warnings
+cargo clippy -p voxly --all-targets -- -D warnings
+cargo test -p voxly --lib
 
-# Frontend
+# Frontend (from repo root)
 pnpm check
 
-# Full dev
+# Run the full app
 pnpm tauri dev
+```
+
+Before opening a PR, also verify that new or changed public APIs have good documentation and that any user-visible behavior is reflected in the README or relevant ADR.
+
+When adding significant features, consider whether a new ADR is warranted (see `docs/adr/`).
 ```
 
 ## Git & Commit Standards
