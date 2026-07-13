@@ -54,6 +54,14 @@ pub enum VoxlyError {
     /// Any other error (use sparingly; prefer a specific variant).
     #[error(transparent)]
     Other(#[from] anyhow::Error),
+
+    /// Download specific (network, resume fail, etc)
+    #[error("download failed: {0}")]
+    DownloadFailed(String),
+
+    /// Low disk space or permission during model ops.
+    #[error("storage error: {0}")]
+    Storage(String),
 }
 
 impl VoxlyError {
@@ -65,6 +73,29 @@ impl VoxlyError {
     /// Convenience for inference errors.
     pub fn inference(msg: impl Into<String>) -> Self {
         Self::Inference(msg.into())
+    }
+
+    /// User-friendly message for UI display (more actionable than Debug).
+    pub fn user_friendly(&self) -> String {
+        match self {
+            VoxlyError::Audio(_) => {
+                "Microphone access issue. Check permissions and device selection in settings."
+                    .to_string()
+            }
+            VoxlyError::ModelDownload(e) => format!(
+                "Model download problem: {}. Check internet and disk space.",
+                e
+            ),
+            VoxlyError::ModelNotFound { model_id } => {
+                format!("Model '{}' not found. Please download it first.", model_id)
+            }
+            VoxlyError::Inference(e) => format!("Inference error: {}. Try reloading the model.", e),
+            VoxlyError::Storage(_) => {
+                "Not enough disk space or permission error. Free up space and try again."
+                    .to_string()
+            }
+            _ => self.to_string(),
+        }
     }
 }
 

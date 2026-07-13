@@ -11,7 +11,7 @@ pub async fn ensure_model_downloaded(
     let path = manager
         .ensure_primary_model()
         .await
-        .map_err(|e| e.to_string())?;
+        .map_err(|e| e.user_friendly())?;
     Ok(path.to_string_lossy().to_string())
 }
 

@@ -4,7 +4,15 @@
 // Real implementation will satisfy them.
 // Broad allow for the initial architecture implementation and placeholders.
 // We will progressively tighten to clippy::pedantic in follow-up work.
-#![allow(clippy::all)]
+#![allow(
+    clippy::all,
+    dead_code,
+    unused_imports,
+    unused_variables,
+    unused_mut,
+    unused_assignments,
+    unused_must_use
+)]
 //!
 //! This file wires together the major architectural components:
 //! - ModelManager (HF downloads + cache)

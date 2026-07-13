@@ -23,6 +23,7 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 use tauri::{AppHandle, Emitter, Manager};
 use tokio::io::AsyncWriteExt;
+use tracing::{debug, info, instrument, warn};
 
 /// Event emitted when model download progress updates.
 /// Includes speed and ETA for nice UI.
@@ -130,6 +131,7 @@ impl ModelManager {
     /// Uses direct reqwest + HTTP Range for robust resumable downloads from HF.
     /// Supports pause/resume/cancel via flags.
     /// Emits detailed `model-download-progress` (with speed/ETA) and state events.
+    #[instrument(skip(self))]
     pub async fn ensure_primary_model(&self) -> Result<PathBuf> {
         let model = &self.primary_model;
         let target_path = self.primary_model_path();

@@ -162,7 +162,7 @@ impl EngineManager {
         &self,
         model_id: &str,
         model_path: &std::path::Path,
-        mut engine_factory: F,
+        engine_factory: F,
     ) -> Result<()>
     where
         F: FnOnce() -> Box<dyn TranscriptionEngine + Send + Sync>,

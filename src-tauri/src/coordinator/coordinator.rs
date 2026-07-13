@@ -11,7 +11,7 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 use tauri::AppHandle;
 use tokio::sync::mpsc;
-use tracing::{debug, error, info, warn};
+use tracing::{debug, error, info, instrument, warn};
 
 #[derive(Debug, Clone)]
 pub enum CoordinatorCommand {
@@ -35,6 +35,7 @@ pub struct TranscriptionCoordinator {
 }
 
 impl TranscriptionCoordinator {
+    #[instrument(skip(app, engine_manager))]
     pub fn new(app: AppHandle, engine_manager: Arc<EngineManager>) -> Self {
         let (cmd_tx, mut cmd_rx) = mpsc::channel(64);
         let app_handle = app.clone();
@@ -92,7 +93,7 @@ impl TranscriptionCoordinator {
                             if state == SessionState::Idle {
                                 continue;
                             }
-                            state = SessionState::Processing;
+                            let _state = SessionState::Processing;
                             if let Some(p) = &processor {
                                 let _ = p.finalize_tx.send(());
                             }

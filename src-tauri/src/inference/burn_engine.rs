@@ -259,7 +259,7 @@ impl TranscriptionEngine for BurnVoxtralEngine {
         // Determine if we have enough new audio to process a step.
         // Use delay_ms to decide the "step" size in samples (rough mapping: delay ~ lookahead).
         // For simplicity we process every ~80ms worth of new audio (Voxtral friendly).
-        let step_samples = (self.delay_ms as usize * 16); // very rough; real uses mel frames
+        let step_samples = self.delay_ms as usize * 16; // very rough; real uses mel frames
         let unprocessed = self.audio_buffer.len() - self.processed_samples;
 
         if unprocessed < step_samples {

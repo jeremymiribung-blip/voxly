@@ -85,3 +85,62 @@ pub trait TranscriptionEngine: Send + Sync {
     /// Human readable name of the backend implementation (for diagnostics).
     fn backend_name(&self) -> &'static str;
 }
+
+#[cfg(test)]
+#[allow(dead_code)]
+pub struct MockTranscriptionEngine {
+    pub loaded: bool,
+    pub last_feed: Vec<f32>,
+    pub finalized_text: String,
+}
+
+#[cfg(test)]
+impl MockTranscriptionEngine {
+    #[allow(dead_code)]
+    pub fn new() -> Self {
+        Self {
+            loaded: false,
+            last_feed: vec![],
+            finalized_text: String::new(),
+        }
+    }
+}
+
+#[cfg(test)]
+#[async_trait]
+impl TranscriptionEngine for MockTranscriptionEngine {
+    async fn load(&mut self, _model_path: &Path) -> Result<()> {
+        self.loaded = true;
+        Ok(())
+    }
+
+    fn unload(&mut self) {
+        self.loaded = false;
+    }
+
+    fn is_loaded(&self) -> bool {
+        self.loaded
+    }
+
+    fn feed_audio(&mut self, samples: &[f32]) -> Option<TranscriptionUpdate> {
+        self.last_feed = samples.to_vec();
+        Some(TranscriptionUpdate {
+            committed: "mock committed".to_string(),
+            tentative: Some("mock tentative".to_string()),
+            timestamps: None,
+        })
+    }
+
+    async fn finalize(&mut self) -> Result<String> {
+        self.finalized_text = "mock final".to_string();
+        Ok(self.finalized_text.clone())
+    }
+
+    fn reset(&mut self) {
+        self.last_feed.clear();
+    }
+
+    fn backend_name(&self) -> &'static str {
+        "mock"
+    }
+}
