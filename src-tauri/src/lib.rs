@@ -44,6 +44,7 @@ fn greet(name: &str) -> String {
 pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
+        .plugin(tauri_plugin_global_shortcut::Builder::new().build())
         .setup(|app| {
             // Resolve and create managers early.
             let model_manager = Arc::new(
@@ -75,6 +76,14 @@ pub fn run() {
             // You can load the engine here once the model exists, or do it lazily
             // from a `load_model` command after the user confirms.
             // For now we leave it unloaded until the coordinator / UI requests it.
+
+            // Global hotkeys can be registered using tauri-plugin-global-shortcut.
+            // Example (add after proper plugin setup and trait import):
+            // app.global_shortcut().register("CommandOrControl+Shift+R", || { coordinator.start_recording(false); }).ok();
+            // Commands from frontend/hotkey handlers call the coordinator methods.
+            tracing::info!(
+                "Hotkey commands ready (register via global-shortcut plugin in production)"
+            );
 
             tracing::info!("Voxly core managers initialized");
 

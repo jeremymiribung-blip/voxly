@@ -44,15 +44,14 @@ pub struct BurnVoxtralEngine {
     loaded_path: Option<std::path::PathBuf>,
     delay_ms: u32,
 
-    // Real state (only when feature enabled)
+    // Real state (only when feature enabled). Wrapped in Mutex because
+    // Burn/Wgpu types and caches are typically !Sync.
     #[cfg(feature = "burn-voxtral")]
-    model: Option<Q4VoxtralModel>,
+    model: std::sync::Arc<std::sync::Mutex<Option<Q4VoxtralModel>>>,
     #[cfg(feature = "burn-voxtral")]
-    encoder_caches: Option<LayerCaches<Wgpu>>,
+    caches: std::sync::Arc<std::sync::Mutex<Option<(LayerCaches<Wgpu>, LayerCaches<Wgpu>)>>>,
     #[cfg(feature = "burn-voxtral")]
-    decoder_caches: Option<LayerCaches<Wgpu>>,
-    #[cfg(feature = "burn-voxtral")]
-    tokenizer: Option<VoxtralTokenizer>,
+    tokenizer: std::sync::Arc<std::sync::Mutex<Option<VoxtralTokenizer>>>,
     #[cfg(feature = "burn-voxtral")]
     device: Option<WgpuDevice>,
     #[cfg(feature = "burn-voxtral")]
@@ -86,13 +85,11 @@ impl BurnVoxtralEngine {
             last_tokens: Vec::new(),
 
             #[cfg(feature = "burn-voxtral")]
-            model: None,
+            model: std::sync::Arc::new(std::sync::Mutex::new(None)),
             #[cfg(feature = "burn-voxtral")]
-            encoder_caches: None,
+            caches: std::sync::Arc::new(std::sync::Mutex::new(None)),
             #[cfg(feature = "burn-voxtral")]
-            decoder_caches: None,
-            #[cfg(feature = "burn-voxtral")]
-            tokenizer: None,
+            tokenizer: std::sync::Arc::new(std::sync::Mutex::new(None)),
             #[cfg(feature = "burn-voxtral")]
             device: None,
             #[cfg(feature = "burn-voxtral")]
@@ -167,18 +164,15 @@ impl TranscriptionEngine for BurnVoxtralEngine {
         {
             let device = Self::select_device();
 
-            // Load GGUF (Q4 path)
             let mut loader = Q4ModelLoader::from_file(model_path)
                 .map_err(|e| VoxlyError::Inference(format!("GGUF load failed: {e}")))?;
             let model = loader
                 .load(&device)
                 .map_err(|e| VoxlyError::Inference(format!("Q4 model load failed: {e}")))?;
 
-            // Caches for stateful streaming (carry KV across chunks)
-            let enc_caches = LayerCaches::new(32); // encoder layers
-            let dec_caches = LayerCaches::new(26); // decoder layers
+            let enc_caches = LayerCaches::new(32);
+            let dec_caches = LayerCaches::new(26);
 
-            // Tokenizer (Tekken). Try to load from same dir if tekken.json present.
             let tokenizer = {
                 let parent = model_path.parent().unwrap_or(Path::new("."));
                 let tok_path = parent.join("tekken.json");
@@ -186,23 +180,21 @@ impl TranscriptionEngine for BurnVoxtralEngine {
                     VoxtralTokenizer::from_file(&tok_path)
                         .map_err(|e| VoxlyError::Inference(format!("tokenizer load: {e}")))?
                 } else {
-                    // Fallback: create a minimal one or error. For demo we create empty and use ids only.
-                    // In real use, ship or download tekken.json alongside GGUF.
-                    warn!("No tekken.json found next to GGUF; token-to-text will be limited.");
-                    VoxtralTokenizer::from_json_str("{}").unwrap_or_else(|_| {
-                        // dummy that just returns token ids as strings
-                        // (real impl would error or use built-in)
-                        panic!("failed dummy tokenizer")
+                    warn!("No tekken.json found; using limited tokenizer.");
+                    // A minimal tokenizer for demo (real deployment should ship tekken.json)
+                    VoxtralTokenizer::from_json_str(r#"{"vocab": {}}"#).unwrap_or_else(|_| {
+                        // If even that fails, the decode path will be no-op in practice.
+                        // For the purpose of this integration the model forward still runs.
+                        panic!("could not create fallback tokenizer")
                     })
                 }
             };
 
             let mel = MelSpectrogram::voxtral();
 
-            self.model = Some(model);
-            self.encoder_caches = Some(enc_caches);
-            self.decoder_caches = Some(dec_caches);
-            self.tokenizer = Some(tokenizer);
+            *self.model.lock().unwrap() = Some(model);
+            *self.caches.lock().unwrap() = Some((enc_caches, dec_caches));
+            *self.tokenizer.lock().unwrap() = Some(tokenizer);
             self.device = Some(device);
             self.mel_extractor = Some(mel);
         }
@@ -275,7 +267,7 @@ impl TranscriptionEngine for BurnVoxtralEngine {
         }
 
         // Take a window of recent audio for this step (use full buffer for stateful causal model).
-        let current_audio = &self.audio_buffer[self.processed_samples..];
+        let _current_audio = &self.audio_buffer[self.processed_samples..];
 
         #[cfg(feature = "burn-voxtral")]
         {

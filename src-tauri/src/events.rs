@@ -68,6 +68,60 @@ pub fn emit_error(app: &AppHandle, message: &str) {
     );
 }
 
+/// Real-time transcription update with tentative vs committed text.
+/// Frontend should display committed + tentative (e.g. tentative in italics or different color).
+#[derive(Clone, Debug, Serialize)]
+pub struct TranscriptionUpdateEvent {
+    pub committed: String,
+    pub tentative: Option<String>,
+    pub timestamp: u64,
+    /// Optional metrics for UI
+    pub latency_ms: Option<u64>,
+}
+
+pub fn emit_transcription_update(
+    app: &AppHandle,
+    committed: &str,
+    tentative: Option<&str>,
+    latency_ms: Option<u64>,
+) {
+    let _ = app.emit(
+        "transcription-update",
+        TranscriptionUpdateEvent {
+            committed: committed.to_string(),
+            tentative: tentative.map(|s| s.to_string()),
+            timestamp: now_ms(),
+            latency_ms,
+        },
+    );
+}
+
+/// Session status for UI state machine.
+#[derive(Clone, Debug, Serialize)]
+pub struct SessionStatusEvent {
+    pub state: String, // "idle", "listening", "processing", "error"
+    pub timestamp: u64,
+    pub metrics: Option<SessionMetrics>,
+}
+
+#[derive(Clone, Debug, Serialize)]
+pub struct SessionMetrics {
+    pub rtf: f32, // real time factor
+    pub tokens_per_sec: f32,
+    pub audio_duration_ms: u64,
+}
+
+pub fn emit_session_status(app: &AppHandle, state: &str, metrics: Option<SessionMetrics>) {
+    let _ = app.emit(
+        "session-status",
+        SessionStatusEvent {
+            state: state.to_string(),
+            timestamp: now_ms(),
+            metrics,
+        },
+    );
+}
+
 fn now_ms() -> u64 {
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)

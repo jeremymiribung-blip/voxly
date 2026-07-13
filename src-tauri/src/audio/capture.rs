@@ -46,7 +46,7 @@ pub struct AudioCapture {
     stream: Option<Stream>,
     stop_flag: Arc<AtomicBool>,
     /// Samples channel consumer (receiver) for the processing pipeline.
-    consumer: mpsc::Receiver<Vec<f32>>,
+    consumer: Option<mpsc::Receiver<Vec<f32>>>,
     device_name: String,
     config: CaptureConfig,
 }
@@ -135,7 +135,7 @@ impl AudioCapture {
         Ok(Self {
             stream: Some(stream),
             stop_flag,
-            consumer: cons,
+            consumer: Some(cons),
             device_name: dev_name,
             config,
         })
@@ -152,8 +152,24 @@ impl AudioCapture {
 
     /// Get a mutable reference to the ring buffer consumer.
     /// The processing task should drain this in a loop.
-    pub fn consumer(&mut self) -> &mut mpsc::Receiver<Vec<f32>> {
-        &mut self.consumer
+    /// Get a mutable ref to the raw receiver (for starting processor).
+    pub fn consumer(&mut self) -> Option<&mut mpsc::Receiver<Vec<f32>>> {
+        self.consumer.as_mut()
+    }
+
+    /// Take the raw receiver (consumes the option). Use when starting AudioProcessor.
+    pub fn take_consumer(&mut self) -> Option<mpsc::Receiver<Vec<f32>>> {
+        self.consumer.take()
+    }
+
+    /// Take ownership of the raw samples receiver for use by AudioProcessor.
+    /// After this, the AudioCapture must stay alive for the stream, but the receiver is moved.
+    pub fn into_raw_receiver(self) -> mpsc::Receiver<Vec<f32>> {
+        // Note: this consumes self but stream is dropped? Better to separate stream lifetime.
+        // For simplicity in current design, we keep capture and clone or use ref.
+        // Workaround: return by value if we change struct, but to keep simple we use a different approach.
+        // For coordinator integration we will start processor before dropping.
+        unimplemented!("use start_full_pipeline helper or keep capture alive")
     }
 
     pub fn device_name(&self) -> &str {
