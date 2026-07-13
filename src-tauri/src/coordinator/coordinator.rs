@@ -90,22 +90,12 @@ impl TranscriptionCoordinator {
 
                             // Start audio capture
                             let cfg = CaptureConfig {
-                                vad_policy: if push_to_talk {
-                                    VadPolicy::Offline
-                                } else {
-                                    VadPolicy::Streaming
-                                },
                                 ..Default::default()
                             };
 
-                            // Wire the live router so frames go straight to the engine worker
-                            let router = engine_manager.router.clone();
-                            type FrameCb = Arc<dyn Fn(&[f32]) + Send + Sync + 'static>;
-                            let audio_cb: Option<FrameCb> = Some(Arc::new(move |frame| {
-                                router.feed(frame);
-                            }));
-
-                            match AudioCapture::start(None, cfg, audio_cb) {
+                            // The new robust pipeline (ringbuf + processor + wavekat) is started here.
+                            // Live router integration for preview can be added by wiring processor to engine feed.
+                            match AudioCapture::start(None, cfg) {
                                 Ok(cap) => {
                                     capture = Some(cap);
 

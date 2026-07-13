@@ -88,7 +88,7 @@ See `docs/adr/0001-initial-architecture.md` for the core decisions and rationale
 ## 🧠 Architecture Highlights
 
 - **Engine Abstraction Layer** — `Engine` trait + concrete implementations (starting with Voxtral Realtime). Inspired by proven patterns (e.g. coordinator + router + RAII guards).
-- **Audio Pipeline** — Lock-free(ish) streaming via atomics + channels. VAD with dynamic trailing silence.
+- **Audio Pipeline** — cpal capture + lock-free(ish) transfer (ringbuf/mpsc), rubato resampling to 16 kHz, wavekat-vad (Silero) with dynamic hangover (streaming vs offline) + onset protection, smart 80 ms overlapping chunks. Non-blocking Tokio delivery to coordinator. Device selection supported.
 - **Safety** — `Arc<Mutex<...>>` + `catch_unwind` + RAII guards around long-running workers.
 - **Model Lifecycle** — Download, verify, cache, lazy load/unload, versioned.
 - **Frontend** — Svelte 5 runes for fine-grained reactivity. Minimal global state.

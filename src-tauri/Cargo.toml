@@ -47,12 +47,14 @@ wavekat-vad = { version = "0.1", features = ["silero"] }
 hf-hub = { version = "0.3", features = ["tokio"] }
 async-trait = "0.1"
 
-# Future: Burn + Voxtral realtime crate (added when integration begins; git dep)
-# burn = { version = "0.15", features = ["ndarray"] }  # or wgpu, cuda etc.
-# voxtral-mini-realtime-rs = { git = "https://github.com/TrevorS/voxtral-mini-realtime-rs", optional = true }
+# Burn + Voxtral Mini Realtime (primary inference)
+# Use git dep for the TrevorS implementation (Q4 GGUF path recommended).
+# wgpu for GPU acceleration; native-tokenizer for Tekken BPE.
+voxtral-mini-realtime = { git = "https://github.com/TrevorS/voxtral-mini-realtime-rs", branch = "main", features = ["wgpu", "native-tokenizer"], optional = true }
+burn = { version = "0.20", default-features = false, features = ["std"], optional = true }
 
 [features]
 default = []
-# burn-voxtral = ["dep:voxtral-mini-realtime-rs"]
+burn-voxtral = ["dep:voxtral-mini-realtime", "dep:burn"]
 
 
