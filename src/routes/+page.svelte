@@ -270,13 +270,13 @@
         ></textarea>
         <div class="text-xs text-slate-500 mt-1">Cmd/Ctrl+Enter to save • Esc to cancel</div>
       {:else}
-        <div class="transcription-area">
+        <div class="transcription-area text-[15px]">
           <span class="committed">{committed}</span>
           {#if tentative}
-            <span class="tentative"> {tentative}</span>
+            <span class="tentative ml-1">{tentative}</span>
           {/if}
           {#if !committed && !tentative}
-            <span class="text-slate-600 italic">Waiting for speech... Start recording to begin.</span>
+            <span class="text-slate-600 italic select-none">Waiting for speech... Press Start or use hotkey.</span>
           {/if}
         </div>
       {/if}
