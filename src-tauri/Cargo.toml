@@ -36,9 +36,12 @@ tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt", "json"] }
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "sync", "time", "fs"] }
 
-# Audio pipeline (cpal base; decibri or stream-audio can replace later)
+# Audio pipeline: cpal + lock-free ringbuf (inspired by Handy's StreamRouter fast path)
+# + rubato for resampling + wavekat-vad (Silero/TEN) for robust VAD
 cpal = "0.16"
 rubato = "0.16"
+ringbuf = "0.5"
+wavekat-vad = { version = "0.1", features = ["silero"] }
 
 # Model management & downloads (Hugging Face)
 hf-hub = { version = "0.3", features = ["tokio"] }

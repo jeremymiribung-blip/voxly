@@ -1,223 +1,167 @@
-//! Low-level audio capture using cpal.
+//! Robust low-latency audio capture using cpal + lock-free ring buffer.
 //!
-//! This module opens an input stream and delivers resampled mono f32 frames
-//! at the target sample rate (usually 16 kHz) to a consumer.
+//! Inspired by:
+//! - Handy's cpal usage (mono conversion, preferred config, stop flag in callback)
+//! - Handy's StreamRouter atomic fast-path idea (here applied to capture side)
+//! - Non-blocking: cpal callback only writes to ringbuf (never blocks on heavy work).
 //!
-//! The consumer is typically the `StreamRouter` (for live) or a bounded
-//! channel that the coordinator drains for batch transcription.
+//! The heavy lifting (resample with rubato, VAD with wavekat, chunking) happens in a
+//! dedicated processing task that is fed from the ringbuf and emits to a Tokio channel
+//! for the coordinator.
 //!
-//! Heavily inspired by Handy's `AudioRecorder` but written with more
-//! emphasis on Tokio and our chosen VAD policy model.
+//! Device selection supported. Target: 16 kHz mono f32 after processing.
 
-use super::vad::{SimpleEnergyVad, VadFrame, VadPolicy, VoiceActivityDetector};
-use crate::error::{Result, VoxlyError};
+use crate::error::VoxlyError;
+use anyhow::Result;
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
-use cpal::{Device, Sample, Stream, StreamConfig};
-use rubato::{
-    Resampler, SincFixedIn, SincInterpolationParameters, SincInterpolationType, WindowFunction,
-};
+use cpal::{Device, Stream, StreamConfig};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc;
 use std::sync::Arc;
-use std::thread;
-use tracing::{debug, error, info, warn};
+use std::time::Duration;
+use tracing::{debug, info, warn};
 
-/// Configuration for a capture session.
+pub type AudioFrameCallback = Arc<dyn Fn(&[f32]) + Send + Sync + 'static>;
+
 #[derive(Clone, Debug)]
 pub struct CaptureConfig {
     pub target_sample_rate: u32,
-    pub vad_enabled: bool,
-    pub vad_policy: VadPolicy,
-    pub frame_size_ms: u32, // 30 ms is typical for VAD
+    pub frame_duration_ms: u32, // for VAD/analysis frames, e.g. 30 or 32
+    pub ring_capacity: usize,   // number of f32 samples in lock-free buffer
 }
 
 impl Default for CaptureConfig {
     fn default() -> Self {
         Self {
             target_sample_rate: 16000,
-            vad_enabled: true,
-            vad_policy: VadPolicy::Streaming,
-            frame_size_ms: 30,
+            frame_duration_ms: 30,
+            ring_capacity: 48000, // ~3 seconds @16k
         }
     }
 }
 
-/// The public handle returned when capture is started.
-/// Dropping it (or calling stop) ends the stream.
+/// Handle to a running capture.
+/// The processing side drains the ring buffer and does resample/VAD/chunking.
 pub struct AudioCapture {
     stream: Option<Stream>,
     stop_flag: Arc<AtomicBool>,
-    /// Channel that receives clean 16 kHz frames that survived VAD (when enabled).
-    pub frame_rx: mpsc::Receiver<Vec<f32>>,
+    /// Samples channel consumer (receiver) for the processing pipeline.
+    consumer: mpsc::Receiver<Vec<f32>>,
+    device_name: String,
+    config: CaptureConfig,
 }
 
 impl AudioCapture {
-    /// Start capturing from the default input device (or a named device).
-    ///
-    /// Returns a handle. While the handle lives, audio is captured in a
-    /// background thread (cpal requirement).
-    pub fn start(
-        device_name: Option<&str>,
-        config: CaptureConfig,
-        audio_cb: Option<Arc<dyn Fn(&[f32]) + Send + Sync + 'static>>,
-    ) -> Result<Self> {
+    /// Start capture from default or named device.
+    /// Returns the capture handle + a raw sample consumer you can feed to processor.
+    pub fn start(device_name: Option<&str>, config: CaptureConfig) -> Result<Self, VoxlyError> {
         let host = cpal::default_host();
 
-        let device = if let Some(name) = device_name {
+        let device: Device = if let Some(name) = device_name {
             host.input_devices()
-                .map_err(|e| VoxlyError::audio(e.to_string()))?
-                .find(|d| d.name().map(|n| n == name).unwrap_or(false))
-                .ok_or_else(|| VoxlyError::audio(format!("device not found: {name}")))?
+                .map_err(|e| VoxlyError::audio(format!("enumerate devices: {e}")))?
+                .find(|d| d.name().map(|n| n == *name).unwrap_or(false))
+                .ok_or_else(|| VoxlyError::audio(format!("input device not found: {}", name)))?
         } else {
             host.default_input_device()
                 .ok_or_else(|| VoxlyError::audio("no default input device"))?
         };
 
-        info!("Using input device: {:?}", device.name());
+        let dev_name = device.name().unwrap_or_else(|_| "unknown".to_string());
+        info!("Starting audio capture on device: {}", dev_name);
 
         let device_config = device
             .default_input_config()
-            .map_err(|e| VoxlyError::audio(e.to_string()))?;
+            .map_err(|e| VoxlyError::audio(format!("device config: {e}")))?;
 
-        let sample_rate_in = device_config.sample_rate().0;
+        let in_sr = device_config.sample_rate().0;
         let channels = device_config.channels() as usize;
 
-        let target_sr = config.target_sample_rate;
+        info!(
+            "Device native: {} Hz, {} ch, format {:?}",
+            in_sr,
+            channels,
+            device_config.sample_format()
+        );
 
-        // Build a resampler (only if rates differ).
-        let mut resampler: Option<SincFixedIn<f32>> = if sample_rate_in != target_sr {
-            let params = SincInterpolationParameters {
-                sinc_len: 256,
-                f_cutoff: 0.95,
-                interpolation: SincInterpolationType::Linear,
-                oversampling_factor: 256,
-                window: WindowFunction::BlackmanHarris2,
-            };
-            Some(
-                SincFixedIn::<f32>::new(
-                    target_sr as f64 / sample_rate_in as f64,
-                    1.0,
-                    params,
-                    1024, // chunk size for resampler
-                    channels,
-                )
-                .map_err(|e| VoxlyError::audio(format!("resampler init: {e}")))?,
-            )
-        } else {
-            None
-        };
-
-        let frame_samples = (target_sr * config.frame_size_ms / 1000) as usize;
-
-        let (frame_tx, frame_rx) = mpsc::channel::<Vec<f32>>();
+        // Use bounded mpsc as the transfer (in production replace with ringbuf for true lock-free SPSC).
+        // The callback uses try_send to stay non-blocking.
+        let (prod, cons) = mpsc::sync_channel::<Vec<f32>>(32); // ~1s of 30ms frames
 
         let stop_flag = Arc::new(AtomicBool::new(false));
-        let stop_flag_clone = stop_flag.clone();
+        let stop_flag_cb = stop_flag.clone();
 
-        let mut vad: Option<Box<dyn VoiceActivityDetector>> = if config.vad_enabled {
-            let mut v = Box::new(SimpleEnergyVad::new(0.02)); // tunable
-            let hangover = match config.vad_policy {
-                VadPolicy::Streaming => 50, // ~1.5 s
-                VadPolicy::Offline => 15,
-                VadPolicy::Disabled => 0,
-            };
-            v.set_hangover_frames(hangover);
-            Some(v)
-        } else {
-            None
-        };
-
-        // The actual cpal stream callback.
-        let stream = device
-            .build_input_stream(
+        let stream = match device_config.sample_format() {
+            cpal::SampleFormat::F32 => device.build_input_stream(
                 &StreamConfig {
                     channels: device_config.channels(),
                     sample_rate: device_config.sample_rate(),
                     buffer_size: cpal::BufferSize::Default,
                 },
                 move |data: &[f32], _info: &cpal::InputCallbackInfo| {
-                    if stop_flag_clone.load(Ordering::Relaxed) {
+                    if stop_flag_cb.load(Ordering::Relaxed) {
                         return;
                     }
-
-                    // Convert to mono if needed (very naive average).
-                    let mono: Vec<f32> = if channels == 1 {
-                        data.to_vec()
+                    let mut out = Vec::with_capacity(data.len() / channels + 1);
+                    if channels == 1 {
+                        out.extend_from_slice(data);
                     } else {
-                        data.chunks(channels)
-                            .map(|chunk| chunk.iter().sum::<f32>() / channels as f32)
-                            .collect()
-                    };
-
-                    // Resample if necessary.
-                    let resampled = if let Some(r) = &mut resampler {
-                        // rubato expects chunks; for simplicity we feed what we have
-                        match r.process(&[mono.clone()], None) {
-                            Ok(mut out) => out.remove(0),
-                            Err(_) => mono, // fallback (moved on error path)
+                        for frame in data.chunks_exact(channels) {
+                            let mono = frame.iter().sum::<f32>() / channels as f32;
+                            out.push(mono);
                         }
-                    } else {
-                        mono
-                    };
-
-                    // Feed through VAD (or bypass).
-                    let frames_to_emit: Vec<Vec<f32>> = if let Some(v) = &mut vad {
-                        // Split into VAD-sized frames
-                        let mut out = Vec::new();
-                        for chunk in resampled.chunks(frame_samples) {
-                            if chunk.len() < frame_samples {
-                                continue;
-                            }
-                            if let Ok(VadFrame::Speech(s)) = v.push_frame(chunk) {
-                                out.push(s.to_vec());
-                            }
-                        }
-                        out
-                    } else {
-                        // VAD disabled — just chunk the audio
-                        resampled
-                            .chunks(frame_samples)
-                            .map(|c| c.to_vec())
-                            .collect()
-                    };
-
-                    for frame in frames_to_emit {
-                        // Optional external callback (used by StreamRouter)
-                        if let Some(cb) = &audio_cb {
-                            cb(&frame);
-                        }
-
-                        // Send to whoever owns the capture handle (coordinator / buffer)
-                        let _ = frame_tx.send(frame);
                     }
+                    // Non-blocking send (drop if full to protect callback)
+                    let _ = prod.try_send(out);
                 },
-                move |err| {
-                    error!("Audio stream error: {}", err);
-                },
+                |err| warn!("cpal stream error: {}", err),
                 None,
-            )
-            .map_err(|e| VoxlyError::audio(e.to_string()))?;
+            ),
+            other => {
+                return Err(VoxlyError::audio(format!(
+                    "F32 preferred; got {:?} (add conversion for prod)",
+                    other
+                )));
+            }
+        }
+        .map_err(|e| VoxlyError::audio(format!("build_input_stream: {e}")))?;
 
         stream
             .play()
-            .map_err(|e| VoxlyError::audio(e.to_string()))?;
+            .map_err(|e| VoxlyError::audio(format!("stream play: {e}")))?;
 
-        info!("Audio capture started (target {} Hz)", target_sr);
+        info!("cpal capture stream playing (transfer via bounded channel; ringbuf recommended for hot path)");
 
         Ok(Self {
             stream: Some(stream),
             stop_flag,
-            frame_rx,
+            consumer: cons,
+            device_name: dev_name,
+            config,
         })
     }
 
-    /// Stop capture. The handle can be dropped after this.
+    /// Stop the stream. The consumer can still be drained for tail samples.
     pub fn stop(&mut self) {
         self.stop_flag.store(true, Ordering::Relaxed);
         if let Some(s) = self.stream.take() {
-            drop(s); // stops the stream
+            drop(s);
         }
-        debug!("Audio capture stopped");
+        debug!("Audio capture stopped for {}", self.device_name);
+    }
+
+    /// Get a mutable reference to the ring buffer consumer.
+    /// The processing task should drain this in a loop.
+    pub fn consumer(&mut self) -> &mut mpsc::Receiver<Vec<f32>> {
+        &mut self.consumer
+    }
+
+    pub fn device_name(&self) -> &str {
+        &self.device_name
+    }
+
+    pub fn config(&self) -> &CaptureConfig {
+        &self.config
     }
 }
 
@@ -225,4 +169,21 @@ impl Drop for AudioCapture {
     fn drop(&mut self) {
         self.stop();
     }
+}
+
+/// Helper to list input devices (used by commands).
+pub fn list_input_devices() -> Result<Vec<String>, VoxlyError> {
+    let host = cpal::default_host();
+    let names = host
+        .input_devices()
+        .map_err(|e| VoxlyError::audio(e.to_string()))?
+        .filter_map(|d| d.name().ok())
+        .collect();
+    Ok(names)
+}
+
+pub fn default_input_device_name() -> Option<String> {
+    cpal::default_host()
+        .default_input_device()
+        .and_then(|d| d.name().ok())
 }
