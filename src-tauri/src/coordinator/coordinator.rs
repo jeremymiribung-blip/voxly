@@ -67,6 +67,9 @@ impl TranscriptionCoordinator {
                             let cfg = CaptureConfig {
                                 ..Default::default()
                             };
+
+                            // First-run flow: if model not present, the ModelManager + frontend onboarding
+                            // will have triggered download. We assume it's ready here (or UI prevents start).
                             if let Ok(mut cap) = AudioCapture::start(None, cfg.clone()) {
                                 if let Some(raw_rx) = cap.take_consumer() {
                                     if let Ok(proc) =

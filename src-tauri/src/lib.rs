@@ -64,18 +64,24 @@ pub fn run() {
             app.manage(engine_manager.clone());
             app.manage(coordinator.clone());
 
-            // Example: eagerly ensure the model is present on startup in the background.
-            // In a real app this would be driven by the frontend / onboarding.
+            // First-run / model management flow:
+            // Ensure model (triggers download if missing, with resume support).
+            // After download, load into EngineManager so inference is ready.
             let mm = model_manager.clone();
+            let em = engine_manager.clone();
             tauri::async_runtime::spawn(async move {
-                if let Err(e) = mm.ensure_primary_model().await {
-                    tracing::warn!("Background model download check failed: {}", e);
+                match mm.ensure_primary_model().await {
+                    Ok(path) => {
+                        tracing::info!("Model ready at {:?}", path);
+                        if let Err(e) = em.load_burn_voxtral("voxtral-primary", &path).await {
+                            tracing::warn!("Failed to load engine after model download: {}", e);
+                        }
+                    }
+                    Err(e) => {
+                        tracing::warn!("Model ensure failed (will show onboarding in UI): {}", e);
+                    }
                 }
             });
-
-            // You can load the engine here once the model exists, or do it lazily
-            // from a `load_model` command after the user confirms.
-            // For now we leave it unloaded until the coordinator / UI requests it.
 
             // Global hotkeys can be registered using tauri-plugin-global-shortcut.
             // Example (add after proper plugin setup and trait import):
@@ -98,6 +104,12 @@ pub fn run() {
             // Model
             commands::ensure_model_downloaded,
             commands::is_model_downloaded,
+            commands::pause_model_download,
+            commands::resume_model_download,
+            commands::cancel_model_download,
+            commands::get_model_path,
+            commands::delete_model,
+            commands::get_model_size,
             // Audio
             commands::list_input_devices,
             commands::get_default_input_device,

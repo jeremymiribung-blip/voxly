@@ -33,6 +33,17 @@
   let targetDelay = $state(480);
   let vadSensitivity = $state(0.5);
 
+  // Model download / onboarding state
+  let modelReady = $state(false);
+  let isDownloading = $state(false);
+  let downloadProgress = $state({
+    downloaded: 0,
+    total: 0,
+    percentage: 0,
+    speed: 0, // bytes/sec
+    eta: 0,   // seconds
+  });
+
   // For editing
   let isEditing = $state(false);
   let editBuffer = $state('');
@@ -112,6 +123,44 @@
     console.log('Settings updated (demo):', { targetDelay, vadSensitivity, selectedDevice });
   }
 
+  async function startModelDownload() {
+    isDownloading = true;
+    downloadProgress = { downloaded: 0, total: 0, percentage: 0, speed: 0, eta: 0 };
+    try {
+      await invoke('ensure_model_downloaded');
+      // Progress comes via events; on complete modelReady will be set
+    } catch (e: any) {
+      isDownloading = false;
+      status = 'error';
+      statusMessage = 'Download failed: ' + (e?.toString() || '');
+    }
+  }
+
+  async function pauseDownload() {
+    await invoke('pause_model_download');
+  }
+
+  async function resumeDownload() {
+    await invoke('resume_model_download');
+  }
+
+  async function cancelDownload() {
+    await invoke('cancel_model_download');
+    isDownloading = false;
+  }
+
+  async function deleteCurrentModel() {
+    try {
+      await invoke('delete_model');
+      modelReady = false;
+      committed = '';
+      tentative = '';
+      statusMessage = 'Model deleted. Restart download.';
+    } catch (e: any) {
+      statusMessage = 'Delete failed: ' + e;
+    }
+  }
+
   function startInlineEdit() {
     isEditing = true;
     editBuffer = committed;
@@ -180,15 +229,49 @@
       statusMessage = event.payload.message;
     });
 
-    unlistenFns = [unlistenUpdate, unlistenStatus, unlistenFinal, unlistenError];
+    // Model download events for onboarding screen
+    const unlistenModelProgress = await listen<any>('model-download-progress', (event) => {
+      const p = event.payload;
+      downloadProgress = {
+        downloaded: p.downloaded_bytes || p.downloaded || 0,
+        total: p.total_bytes || p.total || 0,
+        percentage: p.percentage || 0,
+        speed: p.speed_bps || 0,
+        eta: p.eta_seconds || 0,
+      };
+      isDownloading = true;
+    });
+
+    const unlistenModelState = await listen<any>('model-state-changed', (event) => {
+      const p = event.payload;
+      if (p.event_type === 'download_completed' || p.event_type === 'ready') {
+        isDownloading = false;
+        modelReady = true;
+        statusMessage = 'Model ready';
+      } else if (p.event_type === 'download_started') {
+        isDownloading = true;
+        modelReady = false;
+      }
+    });
+
+    unlistenFns = [unlistenUpdate, unlistenStatus, unlistenFinal, unlistenError, unlistenModelProgress, unlistenModelState];
   }
 
   onMount(async () => {
     await loadDevices();
     await setupListeners();
 
-    // Demo: if no backend events, allow manual testing via buttons
-    // In real use the Rust side drives everything.
+    // Check if model is present (drives onboarding vs main UI)
+    try {
+      modelReady = await invoke<boolean>('is_model_downloaded');
+    } catch (_) {
+      modelReady = false;
+    }
+
+    // If not ready, optionally auto-trigger (or let user click Download)
+    if (!modelReady) {
+      // UI will show onboarding screen
+    }
   });
 
   onDestroy(() => {
@@ -209,6 +292,35 @@
 
 <svelte:window onkeydown={handleKeydown} />
 
+{#if !modelReady}
+  <div class="h-screen flex items-center justify-center bg-slate-950 p-8">
+    <div class="max-w-lg w-full bg-slate-900 border border-slate-800 rounded-3xl p-8">
+      <h1 class="text-2xl font-semibold mb-2">Download the model</h1>
+      <p class="text-slate-400 mb-6">Voxly needs the Voxtral Q4 GGUF model (~2.5 GB) for fully local inference.</p>
+
+      {#if isDownloading}
+        <div class="mb-4">
+          <div class="h-2 bg-slate-800 rounded-full overflow-hidden mb-2">
+            <div class="h-2 bg-sky-500 transition-all" style="width: {downloadProgress.percentage}%"></div>
+          </div>
+          <div class="flex justify-between text-xs text-slate-400">
+            <span>{downloadProgress.percentage.toFixed(1)}%</span>
+            <span>{(downloadProgress.speed/1e6).toFixed(1)} MB/s • ETA {Math.round(downloadProgress.eta/60)}m</span>
+          </div>
+          <div class="text-[10px] text-slate-500 mt-1">Downloaded {(downloadProgress.downloaded/1e9).toFixed(2)} GB / {(downloadProgress.total/1e9).toFixed(2)} GB</div>
+        </div>
+        <div class="flex gap-2">
+          <button onclick={pauseDownload} class="flex-1 py-2 bg-slate-800 rounded-xl">Pause</button>
+          <button onclick={resumeDownload} class="flex-1 py-2 bg-slate-800 rounded-xl">Resume</button>
+          <button onclick={cancelDownload} class="flex-1 py-2 bg-red-950 rounded-xl">Cancel</button>
+        </div>
+      {:else}
+        <button onclick={startModelDownload} class="w-full py-3 bg-sky-600 hover:bg-sky-500 rounded-2xl font-medium">Start Download</button>
+      {/if}
+      <button onclick={deleteCurrentModel} class="mt-3 text-xs text-red-400">Delete cached model</button>
+    </div>
+  </div>
+{:else}
 <div class="flex flex-col h-screen max-w-5xl mx-auto p-4 gap-4">
   <!-- Header -->
   <div class="flex items-center justify-between">
@@ -362,6 +474,7 @@
     Svelte 5 runes • fine-grained updates • Tauri v2 events
   </div>
 </div>
+{/if}
 
 <style>
   /* Additional scoped styles if needed */

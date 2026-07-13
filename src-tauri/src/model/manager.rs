@@ -15,27 +15,29 @@
 
 use crate::error::{Result, VoxlyError};
 use crate::events;
-use hf_hub::api::tokio::Api;
-use hf_hub::{Repo, RepoType};
-// The Progress trait may live under a slightly different path depending on hf-hub version.
-// We implement the required methods directly.
-trait HfProgress {
-    fn init(&mut self, size: usize, filename: &str);
-    fn update(&mut self, size: usize);
-    fn finish(&mut self);
-}
+use futures_util::StreamExt;
+use reqwest::header::{HeaderMap, RANGE};
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 use tauri::{AppHandle, Emitter, Manager};
+use tokio::io::AsyncWriteExt;
 
 /// Event emitted when model download progress updates.
+/// Includes speed and ETA for nice UI.
 #[derive(Clone, Debug, serde::Serialize)]
 pub struct DownloadProgress {
     pub model_id: String,
     pub downloaded_bytes: u64,
     pub total_bytes: u64,
     pub percentage: f64,
+    /// Download speed in bytes per second
+    #[serde(default)]
+    pub speed_bps: f64,
+    /// Estimated time remaining in seconds
+    #[serde(default)]
+    pub eta_seconds: u64,
 }
 
 /// Events describing the lifecycle of a model (loading, ready, error, etc.).
@@ -54,30 +56,33 @@ pub struct ModelManager {
     cache_dir: PathBuf,
     /// Currently only one model is primary. In the future this can become a registry.
     primary_model: PrimaryModel,
+    /// Control flags for active download (pause/resume/cancel)
+    download_paused: Arc<AtomicBool>,
+    download_cancelled: Arc<AtomicBool>,
 }
 
 #[derive(Clone, Debug)]
 struct PrimaryModel {
-    /// Hugging Face repo id, e.g. "mistralai/Voxtral-Mini-4B-Realtime-2602"
+    /// Hugging Face repo id for the quantized weights (Q4 GGUF recommended)
     repo_id: String,
-    /// Revision / commit / tag
+    /// Revision
     revision: String,
-    /// Filename inside the repo (the actual weights file or index).
-    /// For the realtime crate this may be a .safetensors, GGUF, or a directory of shards.
+    /// Exact filename of the GGUF
     filename: String,
     /// Human friendly name
     display_name: String,
+    /// Quant level for UI
+    quant: String,
 }
 
 impl Default for PrimaryModel {
     fn default() -> Self {
         Self {
-            repo_id: "mistralai/Voxtral-Mini-4B-Realtime-2602".to_string(),
+            repo_id: "TrevorJS/voxtral-mini-realtime-gguf".to_string(),
             revision: "main".to_string(),
-            // TODO: confirm exact artifact name once the Burn port publishes recommended files.
-            // The TrevorS crate may expect a specific layout or GGUF Q4 file.
-            filename: "model.safetensors".to_string(), // placeholder — will be adjusted during integration
-            display_name: "Voxtral Mini 4B Realtime (Q4)".to_string(),
+            filename: "voxtral-q4.gguf".to_string(),
+            display_name: "Voxtral Mini 4B Realtime (Q4 GGUF)".to_string(),
+            quant: "Q4".to_string(),
         }
     }
 }
@@ -98,6 +103,8 @@ impl ModelManager {
             app_handle: app_handle.clone(),
             cache_dir,
             primary_model: PrimaryModel::default(),
+            download_paused: Arc::new(AtomicBool::new(false)),
+            download_cancelled: Arc::new(AtomicBool::new(false)),
         })
     }
 
@@ -118,11 +125,11 @@ impl ModelManager {
         &self.primary_model.display_name
     }
 
-    /// Download (or verify) the primary model.
+    /// Download (or resume) the primary model with full control.
     ///
-    /// Emits `model-download-progress` and `model-state-changed` events.
-    /// The implementation uses hf-hub's async API so it can be driven from a
-    /// Tauri command (async) or background task.
+    /// Uses direct reqwest + HTTP Range for robust resumable downloads from HF.
+    /// Supports pause/resume/cancel via flags.
+    /// Emits detailed `model-download-progress` (with speed/ETA) and state events.
     pub async fn ensure_primary_model(&self) -> Result<PathBuf> {
         let model = &self.primary_model;
         let target_path = self.primary_model_path();
@@ -133,41 +140,27 @@ impl ModelManager {
             return Ok(target_path);
         }
 
+        // Reset control flags
+        self.download_paused.store(false, Ordering::Relaxed);
+        self.download_cancelled.store(false, Ordering::Relaxed);
+
         self.emit_state(
             "download_started",
             Some(model.display_name.clone()),
             Some(format!(
-                "Downloading {} from Hugging Face...",
-                model.display_name
+                "Downloading {} ({} quant) from Hugging Face...",
+                model.display_name, model.quant
             )),
         );
 
-        let api = Api::new().map_err(|e| VoxlyError::ModelDownload(e.to_string()))?;
+        let url = format!(
+            "https://huggingface.co/{}/resolve/{}/{}",
+            model.repo_id, model.revision, model.filename
+        );
 
-        let repo = api.repo(Repo::with_revision(
-            model.repo_id.clone(),
-            RepoType::Model,
-            model.revision.clone(),
-        ));
-
-        // For the architecture spike we perform the download without a custom
-        // progress adapter (hf-hub versions differ). Real progress + cancellation
-        // will be wired properly once the exact hf-hub API surface is pinned.
-        let downloaded = repo
-            .get(&model.filename)
-            .await
-            .map_err(|e| VoxlyError::ModelDownload(format!("hf-hub get failed: {e}")))?;
-
-        // For the initial version we simply copy into our cache dir.
-        // In production we would either:
-        //   a) point the engine directly at the hf-hub cache location, or
-        //   b) use a hard link / move.
-        if let Some(parent) = target_path.parent() {
-            std::fs::create_dir_all(parent)?;
-        }
-        tokio::fs::copy(&downloaded, &target_path)
-            .await
-            .map_err(VoxlyError::Io)?;
+        // Perform resumable download
+        self.download_file_resumable(&url, &target_path, model)
+            .await?;
 
         tracing::info!("Model downloaded to {:?}", target_path);
 
@@ -175,6 +168,142 @@ impl ModelManager {
         self.emit_state("ready", Some(model.display_name.clone()), None);
 
         Ok(target_path)
+    }
+
+    /// Core resumable downloader using reqwest Range requests.
+    /// Emits progress with speed (B/s) and ETA.
+    async fn download_file_resumable(
+        &self,
+        url: &str,
+        dest: &Path,
+        model: &PrimaryModel,
+    ) -> Result<()> {
+        let client = reqwest::Client::new();
+
+        // Get total size (HEAD request)
+        let head_resp = client
+            .head(url)
+            .send()
+            .await
+            .map_err(|e| VoxlyError::ModelDownload(e.to_string()))?;
+        let total_size = head_resp.content_length().unwrap_or(0);
+
+        // Check existing partial file
+        let mut downloaded: u64 = 0;
+        if dest.exists() {
+            downloaded = tokio::fs::metadata(dest).await?.len();
+        }
+
+        if downloaded >= total_size && total_size > 0 {
+            return Ok(());
+        }
+
+        let mut headers = HeaderMap::new();
+        if downloaded > 0 {
+            headers.insert(RANGE, format!("bytes={}-", downloaded).parse().unwrap());
+        }
+
+        let resp = client
+            .get(url)
+            .headers(headers)
+            .send()
+            .await
+            .map_err(|e| VoxlyError::ModelDownload(e.to_string()))?;
+
+        let status = resp.status();
+        if !(status.is_success() || status == reqwest::StatusCode::PARTIAL_CONTENT) {
+            return Err(VoxlyError::ModelDownload(format!("Bad status: {}", status)));
+        }
+
+        // Ensure parent dir
+        if let Some(parent) = dest.parent() {
+            tokio::fs::create_dir_all(parent).await?;
+        }
+
+        let mut file = tokio::fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(dest)
+            .await
+            .map_err(VoxlyError::Io)?;
+
+        let mut stream = resp.bytes_stream();
+        let start_time = Instant::now();
+        let mut last_emit = Instant::now();
+
+        while let Some(chunk) = stream.next().await {
+            // Check controls
+            if self.download_cancelled.load(Ordering::Relaxed) {
+                return Err(VoxlyError::ModelDownload("Download cancelled".into()));
+            }
+            while self.download_paused.load(Ordering::Relaxed) {
+                tokio::time::sleep(Duration::from_millis(200)).await;
+                if self.download_cancelled.load(Ordering::Relaxed) {
+                    return Err(VoxlyError::ModelDownload(
+                        "Download cancelled while paused".into(),
+                    ));
+                }
+            }
+
+            let chunk = chunk.map_err(|e| VoxlyError::ModelDownload(e.to_string()))?;
+            file.write_all(&chunk).await.map_err(VoxlyError::Io)?;
+            downloaded += chunk.len() as u64;
+
+            // Throttled progress with speed + ETA
+            let now = Instant::now();
+            if now.duration_since(last_emit) > Duration::from_millis(150)
+                || downloaded >= total_size
+            {
+                let elapsed = start_time.elapsed().as_secs_f64().max(0.1);
+                let speed = downloaded as f64 / elapsed; // bytes/sec
+                let remaining = total_size.saturating_sub(downloaded) as f64;
+                let eta = if speed > 0.0 {
+                    (remaining / speed) as u64
+                } else {
+                    0
+                };
+
+                let percentage = if total_size > 0 {
+                    (downloaded as f64 / total_size as f64) * 100.0
+                } else {
+                    0.0
+                };
+
+                let progress = DownloadProgress {
+                    model_id: model.display_name.clone(),
+                    downloaded_bytes: downloaded,
+                    total_bytes: total_size,
+                    percentage,
+                    speed_bps: speed,
+                    eta_seconds: eta,
+                };
+
+                let _ = self.app_handle.emit("model-download-progress", &progress);
+                last_emit = now;
+            }
+        }
+
+        file.flush().await.map_err(VoxlyError::Io)?;
+        Ok(())
+    }
+
+    /// Pause current download (if active)
+    pub fn pause_download(&self) {
+        self.download_paused.store(true, Ordering::Relaxed);
+        tracing::info!("Download paused");
+    }
+
+    /// Resume current download
+    pub fn resume_download(&self) {
+        self.download_paused.store(false, Ordering::Relaxed);
+        tracing::info!("Download resumed");
+    }
+
+    /// Cancel current download
+    pub fn cancel_download(&self) {
+        self.download_cancelled.store(true, Ordering::Relaxed);
+        self.download_paused.store(false, Ordering::Relaxed);
+        tracing::info!("Download cancelled");
     }
 
     fn emit_state(&self, event_type: &str, name: Option<String>, message: Option<String>) {
