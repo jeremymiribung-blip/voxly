@@ -34,5 +34,22 @@ anyhow = "1"
 thiserror = "1"
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt", "json"] }
-tokio = { version = "1", features = ["rt-multi-thread", "macros", "sync", "time"] }
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "sync", "time", "fs"] }
+
+# Audio pipeline (cpal base; decibri or stream-audio can replace later)
+cpal = "0.16"
+rubato = "0.16"
+
+# Model management & downloads (Hugging Face)
+hf-hub = { version = "0.3", features = ["tokio"] }
+async-trait = "0.1"
+
+# Future: Burn + Voxtral realtime crate (added when integration begins; git dep)
+# burn = { version = "0.15", features = ["ndarray"] }  # or wgpu, cuda etc.
+# voxtral-mini-realtime-rs = { git = "https://github.com/TrevorS/voxtral-mini-realtime-rs", optional = true }
+
+[features]
+default = []
+# burn-voxtral = ["dep:voxtral-mini-realtime-rs"]
+
 
