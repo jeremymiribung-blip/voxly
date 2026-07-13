@@ -10,8 +10,8 @@ env:
   CARGO_TERM_COLOR: always
 
 jobs:
-  build-and-test:
-    name: Build, Clippy, Test (${{ matrix.os }})
+  check:
+    name: Check + Clippy + Test + Frontend (${{ matrix.os }})
     runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
@@ -20,6 +20,23 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: 9
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: 'pnpm'
+
+      - name: Install frontend dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Frontend type check
+        run: pnpm check
+
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@stable
         with:
@@ -27,8 +44,21 @@ jobs:
 
       - name: Rust Cache
         uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: "src-tauri -> target"
 
-      - name: Check
+      # Linux specific system dependencies for Tauri v2
+      - name: Install Linux dependencies
+        if: matrix.os == 'ubuntu-latest'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            libwebkit2gtk-4.1-dev \
+            libappindicator3-dev \
+            librsvg2-dev \
+            patchelf
+
+      - name: Rust check (lib)
         working-directory: src-tauri
         run: cargo check -p voxly
 
@@ -36,7 +66,7 @@ jobs:
         working-directory: src-tauri
         run: cargo clippy -p voxly --all-targets -- -D warnings
 
-      - name: Test
+      - name: Rust tests
         working-directory: src-tauri
         run: cargo test -p voxly --lib
 
@@ -44,5 +74,62 @@ jobs:
         working-directory: src-tauri
         run: cargo fmt -p voxly -- --check
 
-  # Note: Full Tauri desktop build requires more setup (system deps, signing, etc.)
-  # This skeleton focuses on the Rust lib quality. Expand for tauri build in release CI.
+  # Separate job for building the full Tauri app (can be slower)
+  build-tauri:
+    name: Build Tauri App (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: 9
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: 'pnpm'
+
+      - name: Install frontend dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Rust Cache
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: "src-tauri -> target"
+
+      - name: Install Linux dependencies
+        if: matrix.os == 'ubuntu-latest'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            libwebkit2gtk-4.1-dev \
+            libappindicator3-dev \
+            librsvg2-dev \
+            patchelf
+
+      - name: Build frontend
+        run: pnpm build
+
+      - name: Build Tauri app (debug for speed in CI)
+        working-directory: src-tauri
+        run: cargo tauri build --debug
+
+      - name: Upload build artifacts
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: tauri-debug-${{ matrix.os }}
+          path: |
+            src-tauri/target/debug/bundle/**
+            !src-tauri/target/debug/bundle/**/*.pdb
+          retention-days: 7
