@@ -1,0 +1,55 @@
+# =========================
+# Voxly .gitattributes
+# =========================
+
+# Auto detect text files and normalize to LF
+* text=auto
+
+# Documents
+*.md text
+*.txt text
+
+# Source code
+*.rs text eol=lf
+*.ts text eol=lf
+*.js text eol=lf
+*.svelte text eol=lf
+*.json text eol=lf
+*.toml text eol=lf
+*.yaml text eol=lf
+*.yml text eol=lf
+
+# Shell
+*.sh text eol=lf
+*.fish text eol=lf
+
+# Windows specific (CRLF)
+*.bat text eol=crlf
+*.cmd text eol=crlf
+
+# Binary files - do not attempt diff or merge
+*.png binary
+*.jpg binary
+*.jpeg binary
+*.gif binary
+*.ico binary
+*.icns binary
+*.pdf binary
+*.zip binary
+*.tar binary
+*.gz binary
+
+# Large model / weight files - explicitly binary + LFS hint (if using Git LFS later)
+*.gguf binary
+*.ggml binary
+*.safetensors binary
+*.onnx binary
+*.bin binary
+
+# Lockfiles - text for easier review
+Cargo.lock text
+pnpm-lock.yaml text
+
+# Git
+.gitattributes text
+.gitignore text

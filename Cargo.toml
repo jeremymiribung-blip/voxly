@@ -1,0 +1,32 @@
+[workspace]
+resolver = "2"
+members = [
+    "src-tauri",
+    # Future shared crates for modular architecture (inspired by best practices):
+    # "crates/audio-pipeline",
+    # "crates/engine-abstraction",
+    # "crates/vad",
+    # etc.
+]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+authors = ["Jeremy <jeremy@example.com>"]
+license = "Apache-2.0"
+repository = "https://github.com/jeremymiribung-blip/voxly"
+homepage = "https://github.com/jeremymiribung-blip/voxly"
+readme = "README.md"
+keywords = ["tauri", "svelte", "speech-to-text", "stt", "realtime", "local", "privacy", "voxtral", "burn", "ml"]
+categories = ["gui", "multimedia::audio"]
+
+[workspace.dependencies]
+# Common dependencies will be hoisted here in the future for consistency
+tauri = { version = "2", features = [] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+thiserror = "1"
+anyhow = "1"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt"] }
+tokio = { version = "1", features = ["full"] }

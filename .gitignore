@@ -1,0 +1,125 @@
+# =========================
+# Voxly - Comprehensive .gitignore
+# =========================
+
+# --- OS / Editor / IDE ---
+.DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+ehthumbs.db
+Thumbs.db
+desktop.ini
+*.swp
+*.swo
+*~
+.vscode/*
+!.vscode/extensions.json
+!.vscode/settings.json
+!.vscode/launch.json
+.idea/
+*.iml
+*.sublime-project
+*.sublime-workspace
+
+# --- Build outputs ---
+/build
+/dist
+/target
+/out
+*.exe
+*.dll
+*.so
+*.dylib
+*.app
+*.deb
+*.rpm
+*.msi
+*.pkg
+*.dmg
+
+# --- Rust ---
+**/*.rs.bk
+Cargo.lock
+# Note: We commit Cargo.lock for reproducible builds in application crates.
+# If you prefer not to, uncomment above. For now we keep it (added by cargo later).
+
+# --- Node / Frontend (SvelteKit + Vite) ---
+node_modules/
+/.svelte-kit/
+package-lock.json
+# pnpm-lock.yaml   # Committed for reproducible installs (uncomment only if you prefer not to)
+yarn.lock
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+.pnp
+.pnp.js
+.env
+.env.*
+!.env.example
+vite.config.js.timestamp-*
+vite.config.ts.timestamp-*
+*.local
+
+# --- Tauri specific ---
+/src-tauri/target/
+/src-tauri/gen/
+/src-tauri/.cargo/
+/src-tauri/Cargo.lock
+# Keep root Cargo.lock for workspace reproducibility
+
+# --- Models, weights, caches (large binary files, privacy + size) ---
+*.gguf
+*.ggml
+*.bin
+*.safetensors
+*.onnx
+*.pt
+*.pth
+*.ckpt
+models/
+model_cache/
+cache/
+huggingface/
+**/whisper*/
+**/voxtral*/
+**/*-realtime*/
+# Allow small test fixtures if needed:
+!**/test-fixtures/**/*.gguf
+!**/test-fixtures/**/*.onnx
+
+# --- Logs & temp ---
+*.log
+logs/
+*.tmp
+tmp/
+temp/
+*.bak
+
+# --- Audio recordings / user data (privacy) ---
+recordings/
+*.wav
+*.mp3
+*.flac
+*.ogg
+*.m4a
+user-data/
+app-data/
+
+# --- Test & coverage ---
+/coverage
+*.lcov
+.nyc_output
+/test-results/
+/playwright-report/
+/blob-report/
+/playwright/.cache/
+
+# --- Misc ---
+*.patch
+*.diff
+# Keep this file
+!.gitignore
+!.gitattributes
